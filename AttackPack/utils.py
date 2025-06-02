@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-def visualize_ecg(entry, modified_entry=None, options=""):
+def visualize_entry(entry, modified_entry=None, options=""):
     """
     Visualize ECG data with optional comparison to modified data.
 

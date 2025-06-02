@@ -4,6 +4,22 @@ import torch.nn.functional as F
 import numpy as np
 
 
+
+def attack_model(*args, **kwargs):
+    """
+    Wrapper function to call the attack_model_grad function.
+    """
+    # Unpack arguments
+    model, criterion, dev, loader, epsilon = args[:5]
+    method = kwargs.get('method', 'fgsm')
+
+    # Call the attack_model_grad function
+    return attack_model_grad(model, criterion, dev, loader, epsilon, method)
+
+
+
+
+
 def attack_model_grad(model, criterion, dev, loader, epsilon, method="fgsm"):
     # Accuracy counter
     correct = 0

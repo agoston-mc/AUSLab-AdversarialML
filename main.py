@@ -1,5 +1,5 @@
 import torch
-from AttackPack import bridge, attack_model_grad, visualize_entry
+from AttackPack import bridge, visualize_entry
 import matplotlib.pyplot as plt
 import numpy as np
 

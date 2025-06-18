@@ -4,7 +4,6 @@ import torch
 
 from . import DATABASE as db, AttackEntry, MethodParams, SetupParams, bridge, methods
 from dataclasses import dataclass
-import numpy as np
 
 
 @dataclass
@@ -34,7 +33,7 @@ def loop(model, loader, device, criterion, method, epss, type="d", early_stop=-1
     effs = []
     corrs = [0 for _ in epss]
 
-    for i, (data, rr, target) in enumerate(loader):
+    for data_idx, (data, rr, target) in enumerate(loader):
 
         if len(effs) >= early_stop > 0:
             break
@@ -42,7 +41,7 @@ def loop(model, loader, device, criterion, method, epss, type="d", early_stop=-1
         # Send the data and label to the device
         data, rr, target = data.to(device), rr.to(device), target.to(device)
 
-        # todo needs requires_grad = True for attack?
+        # Setup method
         method.setup(SetupParams(model, data, rr))
 
         # Forward pass the data through the model
@@ -51,64 +50,58 @@ def loop(model, loader, device, criterion, method, epss, type="d", early_stop=-1
         # Get the initial prediction
         init_pred = output.argmax(dim=-1)
 
-        # todo skip is init is already bad?
+        # Skip if initial prediction is wrong
         if init_pred.item() != target.argmax(dim=-1).item():
             continue
 
-        # todo[?] Optim step for model
+        # Compute loss and gradients
         loss = criterion((output, ln), target)
-
         loss.backward()
 
-        # Generate noise
-        mpar = MethodParams(data, rr, output, target, criterion, device)
-        d_noise, rr_noise = method.get_noise(mpar)
+        for eps_idx, eps in enumerate(epss):  # Fixed variable shadowing
+            # Generate noise with epsilon parameter
+            mpar = MethodParams(data, rr, output, target, criterion, device, model, epsilon=eps)
+            d_noise, rr_noise = method.get_noise(mpar)
 
-        for i, eps in enumerate(epss):
-            # Apply the noise to the data
+            # Apply the noise based on attack type
             if "d" in type:
-                # Add noise to the data
                 adv_data = data + eps * d_noise
-                # todo? Normalize the data prob not neccessary
             else:
                 adv_data = data
 
             if "r" in type:
-                # Add noise to the rr intervals
                 adv_rr = rr + eps * rr_noise
             else:
                 adv_rr = rr
 
-            # get the new output
+            # Get new output
             m_output, m_ln = model(adv_data, adv_rr)
-
-            # Get the new prediction
             mod_pred = m_output.argmax(dim=-1)
 
-            # Check if the prediction changed
+            # Check if attack was successful
             if mod_pred.item() != init_pred.item():
-                # If the prediction changed, we have a successful attack
-                print(f"Attack successful on ds[{i}]: {init_pred.item()} -> {mod_pred.item()} with eps={eps}")
+                print(f"Attack successful on ds[{data_idx}]: {init_pred.item()} -> {mod_pred.item()} with eps={eps}")
                 print(f"initial output: {output.flatten()}")
                 print(f"modified output: {m_output.flatten()}")
-                # save to database
+
+                # Save to database
                 entry = AttackEntry(
                     model_name=model.__class__.__name__,
                     weights_file=w_file,
                     epsilon=eps,
                     attack_type=method.name,
                     extent="both" if "d" in type and "r" in type else "data" if "d" in type else "rr",
-                    data_idx=i,
+                    data_idx=data_idx,
                     data_file=data_file,
                     data_noise=d_noise if "d" in type else None,
                     rr_noise=rr_noise if "r" in type else None
                 )
 
                 db.insert(entry)
-
                 effs.append(calc_attack_effectiveness(output, m_output))
-                corrs[i] -= 1
-            corrs[i] += 1
+                corrs[eps_idx] -= 1
+
+            corrs[eps_idx] += 1
 
     return effs, [corr / len(loader) for corr in corrs]
 
@@ -179,6 +172,8 @@ def main(**kwargs):
     name, model, criterion = bridge.create_model(name,
                                                  hypparams,
                                                  dataset[0], torch.float, device)
+
+    model.load_state_dict(weights)
 
     for m in method:
         print(f"Using method: {m}")

@@ -17,6 +17,8 @@ def create_model(name, hyperparams, sample_entry, dtype, device) -> tuple[str, v
     Helper function to force fill scrip local variables in ecg_classification and calculate some sizes for agglomeration
     """
     # get creator function
+    if '-' in name:
+        name = name.replace('-', '_')
     assert name in [
         "vpnet_hermite", "vpnet_hermite_rr", "vpnet_hermite2", "vpnet_hermite2_rr",
     ], f"Unknown model name (unfold fails): {name}"

@@ -1,63 +1,199 @@
-from .consts import *
-from . import DATABASE as db, AttackEntry
+import os.path
 
-def loop(model, loader, device, criterion, method, eps, type="d"):
+import torch
+
+from . import DATABASE as db, AttackEntry, MethodParams, SetupParams, bridge, methods
+from dataclasses import dataclass
+import numpy as np
+
+
+@dataclass
+class effects:
+    d_correct: float
+    d_adv: float
+    d_diff: float
+
+
+def calc_attack_effectiveness(orig_pred, mod_pred):
+    # assumes mod_pred is correctly a different idx than pred, a successful attack
+    idx_orig = orig_pred.argmax(dim=-1)
+    idx_mod = mod_pred.argmax(dim=-1)
+
+    d_correct = orig_pred.flatten()[idx_orig] - mod_pred.flatten()[idx_orig]
+    d_adv = mod_pred.flatten()[idx_mod] - orig_pred.flatten()[idx_mod]
+    d_diff = mod_pred.flatten()[idx_mod] - mod_pred.flatten()[idx_orig]
+
+    return effects(d_correct, d_adv, d_diff)
+
+
+def loop(model, loader, device, criterion, method, epss, type="d", early_stop=-1, w_file="", data_file=None):
     """
     A single loop over the dataset, while applying the attack method
     """
 
-    for data, rr, target in loader:
+    effs = []
+    corrs = [0 for _ in epss]
+
+    for i, (data, rr, target) in enumerate(loader):
+
+        if len(effs) >= early_stop > 0:
+            break
+
         # Send the data and label to the device
         data, rr, target = data.to(device), rr.to(device), target.to(device)
 
         # todo needs requires_grad = True for attack?
+        method.setup(SetupParams(model, data, rr))
 
         # Forward pass the data through the model
         output, ln = model(data, rr)
 
         # Get the initial prediction
-        init_pred = target.argmax(dim=-1)
+        init_pred = output.argmax(dim=-1)
 
         # todo skip is init is already bad?
         if init_pred.item() != target.argmax(dim=-1).item():
             continue
 
-        # todo? Optim step for model
+        # todo[?] Optim step for model
+        loss = criterion((output, ln), target)
+
+        loss.backward()
 
         # Generate noise
-        d_noise, rr_noise = method(data, rr, output, target, criterion, device)
+        mpar = MethodParams(data, rr, output, target, criterion, device)
+        d_noise, rr_noise = method.get_noise(mpar)
 
-        # Apply the noise to the data
-        if "d" in type:
-            # Add noise to the data
-            data = data + eps * d_noise
-            # todo? Normalize the data
+        for i, eps in enumerate(epss):
+            # Apply the noise to the data
+            if "d" in type:
+                # Add noise to the data
+                adv_data = data + eps * d_noise
+                # todo? Normalize the data prob not neccessary
+            else:
+                adv_data = data
 
-        if "r" in type:
-            # Add noise to the rr intervals
-            rr = rr + eps * rr_noise
+            if "r" in type:
+                # Add noise to the rr intervals
+                adv_rr = rr + eps * rr_noise
+            else:
+                adv_rr = rr
+
+            # get the new output
+            m_output, m_ln = model(adv_data, adv_rr)
+
+            # Get the new prediction
+            mod_pred = m_output.argmax(dim=-1)
+
+            # Check if the prediction changed
+            if mod_pred.item() != init_pred.item():
+                # If the prediction changed, we have a successful attack
+                print(f"Attack successful on ds[{i}]: {init_pred.item()} -> {mod_pred.item()} with eps={eps}")
+                print(f"initial output: {output.flatten()}")
+                print(f"modified output: {m_output.flatten()}")
+                # save to database
+                entry = AttackEntry(
+                    model_name=model.__class__.__name__,
+                    weights_file=w_file,
+                    epsilon=eps,
+                    attack_type=method.name,
+                    extent="both" if "d" in type and "r" in type else "data" if "d" in type else "rr",
+                    data_idx=i,
+                    data_file=data_file,
+                    data_noise=d_noise if "d" in type else None,
+                    rr_noise=rr_noise if "r" in type else None
+                )
+
+                db.insert(entry)
+
+                effs.append(calc_attack_effectiveness(output, m_output))
+                corrs[i] -= 1
+            corrs[i] += 1
+
+    return effs, [corr / len(loader) for corr in corrs]
 
 
-        # get the new output
-        m_output, m_ln = model(data)
+def load_module_from_weight(fweight: str, device):
+    t_weights = torch.load(fweight, map_location=device, weights_only=True)
 
-        # Get the new prediction
-        mod_pred = m_output.argmax(dim=-1)
+    if fweight.endswith(".pt"):
+        fweight = fweight.strip(".pt")
 
-        # Check if the prediction changed
-        if mod_pred.item() != init_pred.item():
-            # If the prediction changed, we have a successful attack
-            print(f"Attack successful: {init_pred.item()} -> {mod_pred.item()} with eps={eps}")
-            # save to database
-            entry = AttackEntry(
-                model_name=model.__class__.__name__,
-                weights_file=MODEL_WEIGHTS_PATH,
-                epsilon=eps,
-                attack_type=method.__name__,
-                extent="both" if "d" in type and "r" in type else "data" if "d" in type else "rr",
+    parts = fweight.split("_")
 
-            )
+    module_name = parts[0]
+
+    b_size = int(parts[1][1:])
+
+    lr = float(parts[2][2:])
+
+    epoch = int(parts[3][1:])
+
+    p_init = [float(p) for p in parts[4][1:].split("-")]
+
+    n_vp = int(parts[5][1:])
+
+    n_hidden = [int(p) for p in parts[6][1:].split("-")]
+
+    penalty = float(parts[7][1:])
+
+    return [module_name, b_size, lr, epoch, p_init, n_vp, n_hidden, penalty], t_weights
 
 
-def main():
-    pass
+def create_dataset(mfile, device, dtype=torch.float):
+    """
+    Create a dataset from a .mat file.
+    """
+    mfile = os.path.join(os.path.dirname(__file__), '..', 'vpunfold', 'data', mfile)
+    dataset = bridge.create_dataset(mfile, device=device, dtype=torch.float)
+
+    return dataset
+
+
+def main(**kwargs):
+    method: str = kwargs["method"]
+    eps: list[float] = kwargs["eps"]
+    device: str | torch.device = kwargs["device"]
+    weight_f: str = kwargs["weights"]
+    adv_method: str = kwargs["adv_method"]
+    early_stop: int = kwargs.get("early_stop", -1)
+
+    if method == "full":
+        pass
+    method = method.split(",")
+
+    if isinstance(device, str):
+        device = torch.device(device)
+
+
+    m_fname = 'mitdb_filt35_w300adapt_ds2_float.mat'
+
+    dataset = create_dataset(m_fname, device, dtype=torch.float)
+
+    loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
+
+    # todo extract hyperparams  :from file name
+
+    (name, *hypparams), weights = load_module_from_weight(weight_f, device)
+
+    name, model, criterion = bridge.create_model(name,
+                                                 hypparams,
+                                                 dataset[0], torch.float, device)
+
+    for m in method:
+        print(f"Using method: {m}")
+        effs = loop(
+            model,
+            loader,
+            device,
+            criterion,
+            methods[m],
+            epss=eps,
+            type=adv_method,
+            early_stop=early_stop,
+            w_file=weight_f,
+            data_file=m_fname
+        )
+        print(effs)
+
+

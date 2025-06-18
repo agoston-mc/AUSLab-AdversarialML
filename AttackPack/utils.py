@@ -1,6 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 from matplotlib.gridspec import GridSpec
+from .database import AttackEntry
+from .main import create_dataset
 
 def visualize_entry(entry, modified_entry=None, options=""):
     """
@@ -88,4 +91,37 @@ def visualize_entry(entry, modified_entry=None, options=""):
     plt.show()
     return fig
 
+def show_entry(entry:AttackEntry):
+    """
+    Visualize a single attack entry.
 
+    Parameters:
+    -----------
+    entry : AttackEntry
+        The attack entry to visualize.
+    """
+
+    original_data = create_dataset(entry.data_file, torch.device("cpu"), dtype=torch.float32)
+
+    original_data = original_data[entry.data_idx]
+
+
+    if 'data' in entry.extent:
+        m_d = original_data[0] + entry.epsilon * entry.data_noise
+        m_rr = original_data[1]
+
+    if 'rr' in entry.extent:
+        m_d = original_data[0]
+        m_rr = original_data[1] + entry.epsilon * entry.rr_noise
+
+    if 'both' in entry.extent:
+        m_d = original_data[0] + entry.epsilon * entry.data_noise
+        m_rr = original_data[1] + entry.epsilon * entry.rr_noise
+
+    modified_data = (m_d, m_rr, original_data[2])
+
+    return visualize_entry(
+        (t.numpy() for t in original_data),
+        (t.numpy() for t in modified_data),
+        options=f"t:{entry.model_name} - {entry.attack_type} - eps={entry.epsilon:.3f} - idx={entry.data_idx} - {entry.extent}"
+    )

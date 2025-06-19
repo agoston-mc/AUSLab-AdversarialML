@@ -44,8 +44,8 @@ class AttackDatabase:
         self.conn.commit()
 
     def insert(self, entry: AttackEntry):
-        data_noise = sqlite3.Binary(entry.data_noise.detach().numpy().tobytes()) if entry.extent in ('data', 'both') else None
-        rr_noise = sqlite3.Binary(entry.rr_noise.detach().numpy().tobytes()) if entry.extent in ('rr', 'both') else None
+        data_noise = sqlite3.Binary(entry.data_noise.cpu().detach().numpy().tobytes()) if entry.extent in ('data', 'both') else None
+        rr_noise = sqlite3.Binary(entry.rr_noise.cpu().detach().numpy().tobytes()) if entry.extent in ('rr', 'both') else None
 
         self.cur.execute("""
             INSERT INTO attacks (

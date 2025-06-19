@@ -193,6 +193,7 @@ def main(**kwargs):
             method_data[m] = effs
             # print(effs)
         except Exception as e:
+            raise e
             print(f"Error during attack with method {m}: {e}")
             continue
 

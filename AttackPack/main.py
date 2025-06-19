@@ -80,9 +80,9 @@ def loop(model, loader, device, criterion, method, epss, type="d", early_stop=-1
 
             # Check if attack was successful
             if mod_pred.item() != init_pred.item():
-                print(f"Attack successful on ds[{data_idx}]: {init_pred.item()} -> {mod_pred.item()} with eps={eps}")
-                print(f"initial output: {output.flatten()}")
-                print(f"modified output: {m_output.flatten()}")
+                # print(f"Attack successful on ds[{data_idx}]: {init_pred.item()} -> {mod_pred.item()} with eps={eps}")
+                # print(f"initial output: {output.flatten()}")
+                # print(f"modified output: {m_output.flatten()}")
 
                 # Save to database
                 entry = AttackEntry(
@@ -153,7 +153,7 @@ def main(**kwargs):
 
     if method == "full":
         pass
-    method = method.split(",")
+    methodls = method.split(",")
 
     if isinstance(device, str):
         device = torch.device(device)
@@ -173,20 +173,33 @@ def main(**kwargs):
 
     model.load_state_dict(weights)
 
-    for m in method:
+    method_data = {}
+
+    for m in methodls:
         print(f"Using method: {m}")
-        effs = loop(
-            model,
-            loader,
-            device,
-            criterion,
-            methods[m],
-            epss=eps,
-            type=adv_method,
-            early_stop=early_stop,
-            w_file=weight_f,
-            data_file=m_fname
-        )
-        print(effs)
+        try:
+            effs = loop(
+                model,
+                loader,
+                device,
+                criterion,
+                methods[m],
+                epss=eps,
+                type=adv_method,
+                early_stop=early_stop,
+                w_file=weight_f,
+                data_file=m_fname
+            )
+            method_data[m] = effs
+            # print(effs)
+        except Exception as e:
+            print(f"Error during attack with method {m}: {e}")
+            continue
 
-
+    with open(os.path.join(os.path.dirname(__file__), 'results.txt'), 'w') as f:
+        for m, effs in method_data.items():
+            f.write(f"Method: {m}\n")
+            for eff, corr in zip(*effs):
+                f.write(f"Effectiveness: {eff}, Correctness: {corr}\n")
+            f.write("\n")
+    print("Attack completed. Results saved to results.txt.")

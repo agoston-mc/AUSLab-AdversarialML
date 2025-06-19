@@ -165,8 +165,6 @@ def main(**kwargs):
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
 
-    # todo extract hyperparams  :from file name
-
     (name, *hypparams), weights = load_module_from_weight(weight_f, device)
 
     name, model, criterion = bridge.create_model(name,
